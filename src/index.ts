@@ -6,6 +6,13 @@ import postgres from "postgres";
 import { migrate } from "drizzle-orm/postgres-js/migrator";
 import { drizzle } from "drizzle-orm/postgres-js";
 
+import {createUser,deleteUsers,getUserByEmail} from "./lib/db/queries/users.js"
+import {createChirp,allChirps,getChirpById} from "./lib/db/queries/chirps.js"
+
+import { hashPassword,checkPasswordHash } from "./auth.js";
+
+
+
 const migrationClient = postgres(config.db.url, { max: 1 });
 await migrate(drizzle(migrationClient), config.db.migrationConfig);
 
@@ -55,37 +62,91 @@ const handlerPrint = async (req:Request,res:Response)=>{
 }
 
 const handlerReset = async (req:Request,res:Response)=>{
-	config.api.fileserverHits = 0;
-	res.set("Content-Type","text/plain; charset=utf-8");
-        res.send(`Hits: ${config.api.fileserverHits}`)
+	
+	if(config.api.platform!=="dev") res.status(403).send("Forbidden")	
+	await deleteUsers();
+	config.api.fileserverHits = 0; 
+        res.status(200).send("reset file serve hits & users deleted")
+
+	
 
 }
 
 
-const handlerValidateChirp = async (req:Request,res:Response)=>{
+const handleAddChirp = async (req:Request,res:Response)=>{
+
+	try{
+		const ans = req.body;
+		if(!ans.body || !ans.userId){ res.status(400).send("the request does not has all required feild"); return; }
+		if(ans.body.length>140) throw new BadRequestError("Chirp is too long. Max length is 140");
+                const array = ans.body.split(" ");
+                for (let i=0;i<array.length;i++){
+                        if(array[i].toLowerCase()=="kerfuffle" || array[i].toLowerCase()=="sharbert" ||  array[i].toLowerCase()=="fornax")
+                                array[i]="****";
+
+                }
+                ans.body = array.join(" ");
+		const dataAddedToDB = await createChirp({body:ans.body,userId:ans.userId});
+		res.status(201).json(dataAddedToDB);
+		
+	}catch(err){
+		console.log(err);
 	
-	const e = {error : "Something went wrong"}
-	const f = {error : "Chirp is too long"}
-	
-	res.header("Content-Type", "application/json");
+	}
+
+
+
+
+
+}
+
+
+const handlerAddUser = async (req:Request,res:Response) => {
 	try{
 		const obj = req.body;
-		if(!obj.body){res.status(400).send(JSON.stringify(e)); return;}
-		if(obj.body.length>140){throw new BadRequestError("Chirp is too long. Max length is 140");}
-		const array = obj.body.split(" ");
-		for (let i=0;i<array.length;i++){
-			if(array[i].toLowerCase()=="kerfuffle" || array[i].toLowerCase()=="sharbert" ||  array[i].toLowerCase()=="fornax")
-				array[i]="****";
-			
-		}
-		const newstr = array.join(" ");
-		res.status(200).send(JSON.stringify({cleanedBody:newstr}));
-	}
-	catch(err){
-		throw err;
+		if (!obj.email || !obj.password) throw Error ("the request does not has the required feild");
+		const hashedPassword = await hashPassword(obj.password);
+		const ans = await createUser({email:obj.email, hashedPassword});
+		return res.status(201).json({
+			id: ans.id,
+			createdAt: ans.createdAt,
+			updatedAt: ans.updatedAt,
+			email: ans.email,
+		});
+
+
+	}catch(err){
+		console.log(err);
 	}
 
+
 }
+
+
+const handleAllChirps = async (req:Request,res:Response) => {
+	const ans =await  allChirps();
+	res.status(200).send(ans);
+
+
+
+
+}
+
+
+const handleGetChirpById = async (req:Request,res:Response) => {
+
+	const id = req.params.chirpId as string;
+	const ans = await getChirpById(id);
+	if(!ans){
+		res.status(404).send("Chirp not found");
+		return;
+	}
+	res.status(200).send(ans);
+
+
+}
+
+
 
 function ErrorMiddleware (err: Error,req: Request,res: Response,next: NextFunction) {
 	console.log(err);
@@ -141,7 +202,33 @@ function middlewareMetricsInc(req: Request, res: Response, next: NextFunction) {
 	next();
 }
 
+const handleLogin = async (req: Request, res: Response) => {
+  const { email, password } = req.body;
 
+  const user = await getUserByEmail(email);
+
+  if (!user) {
+    res.status(401).send("incorrect email");
+    return;
+  }
+
+  const passwordMatches = await checkPasswordHash(
+    password,
+    user.hashedPassword
+  );
+
+  if (!passwordMatches) {
+    res.status(401).send("incorrect password");
+    return;
+  }
+
+  res.status(200).json({
+    id: user.id,
+    createdAt: user.createdAt,
+    updatedAt: user.updatedAt,
+    email: user.email,
+  });
+};
 
 app.use(express.json());
 app.use("/app",middlewareMetricsInc);
@@ -151,10 +238,14 @@ app.use(middlewareLogResponses);
 
 app.get("/api/healthz",handlerReadiness);
 app.get("/admin/metrics",handlerPrint);
-
+app.get("/api/chirps",handleAllChirps)
+app.get("/api/chirps/:chirpId",handleGetChirpById);
 
 app.post("/admin/reset",handlerReset);
-app.post("/api/validate_chirp",handlerValidateChirp);
+app.post("/api/users",handlerAddUser);
+app.post("/api/chirps",handleAddChirp)
+app.post("/api/login", handleLogin);
+
 
 app.use(ErrorMiddleware);
 
