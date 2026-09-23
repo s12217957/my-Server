@@ -12,6 +12,7 @@ type APIConfig = {
   fileserverHits: number;
   port: number;
   platform: string;
+  secret: string;
 };
 
 
@@ -26,7 +27,8 @@ export const config : {api: APIConfig; db:DBConfig;} =  {
   api:{
     fileserverHits:0,
     port:Number(process.env.PORT),
-    platform:process.env.PLATFORM!
+    platform:process.env.PLATFORM!,
+    secret:process.env.JWT_SECRET!
   },
   db:{
     url:process.env.DB_URL!,
