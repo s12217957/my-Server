@@ -29,6 +29,13 @@
       "when": 1790154544313,
       "tag": "0003_common_reavers",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1790182025344,
+      "tag": "0004_youthful_white_queen",
+      "breakpoints": true
     }
   ]
 }

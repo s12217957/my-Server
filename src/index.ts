@@ -6,11 +6,11 @@ import postgres from "postgres";
 import { migrate } from "drizzle-orm/postgres-js/migrator";
 import { drizzle } from "drizzle-orm/postgres-js";
 
-import {createUser,deleteUsers,getUserByEmail} from "./lib/db/queries/users.js"
-import {createChirp,allChirps,getChirpById} from "./lib/db/queries/chirps.js"
+import {createUser,deleteUsers,getUserByEmail,editUser,getUserById,upgradeUser} from "./lib/db/queries/users.js"
+import {createChirp,allChirps,getChirpById,getChirp,deleteChirp} from "./lib/db/queries/chirps.js"
 import {addRefreshToken,checkToken,revokeToken} from "./lib/db/queries/refreshToken.js"
 import { hashPassword,checkPasswordHash } from "./auth.js";
-import { makeJWT, validateJWT, getBearerToken, makeRefreshToken } from "./auth.js"
+import { makeJWT, validateJWT, getBearerToken, makeRefreshToken, getAPIKey } from "./auth.js"
 
 
 const migrationClient = postgres(config.db.url, { max: 1 });
@@ -115,6 +115,7 @@ const handlerAddUser = async (req:Request,res:Response) => {
 			createdAt: ans.createdAt,
 			updatedAt: ans.updatedAt,
 			email: ans.email,
+			isChirpyRed: ans.isChirpyRed
 		});
 
 
@@ -127,11 +128,20 @@ const handlerAddUser = async (req:Request,res:Response) => {
 
 
 const handleAllChirps = async (req:Request,res:Response) => {
-	const ans =await  allChirps();
-	res.status(200).send(ans);
+	
+    const authorId = req.query.authorId as string | undefined;
+    const sort = req.query.sort as string | undefined;
+    const chirps = await allChirps(authorId);
 
+    chirps.sort((a, b) => {
+        if (sort === "desc") {
+            return b.createdAt.getTime() - a.createdAt.getTime();
+        }
 
+        return a.createdAt.getTime() - b.createdAt.getTime();
+    });
 
+    res.status(200).json(chirps);
 
 }
 
@@ -238,6 +248,7 @@ const handleLogin = async (req: Request, res: Response) => {
     createdAt: user.createdAt,
     updatedAt: user.updatedAt,
     email: user.email,
+    isChirpyRed: user.isChirpyRed,
     token: accessToken,
     refreshToken: refToken
   });
@@ -268,10 +279,88 @@ const handleRevoke = async (req: Request, res: Response) => {
         await revokeToken(refreshToken);
 	res.status(204).send();
 
+}
+
+const handleEditEmailPassword =  async (req: Request, res: Response) => {
+
+        try{
+                const ans = req.body;
+                if(!ans.email || !ans.password){ res.status(400).send("the request does not has all required feild"); return; }
+                const token = getBearerToken(req);
+                if (!token) {
+                        res.status(401).send("missing token");
+                        return;
+                }
+                const userId =  validateJWT(token , config.api.secret);
+		const hashPass = await hashPassword(ans.password)
+                const updatedUser = await  editUser(userId, ans.email, hashPass);
+                res.status(200).json({id: updatedUser.id,
+    				      createdAt: updatedUser.createdAt,
+    				      updatedAt: updatedUser.updatedAt,
+    				      email: updatedUser.email,
+				      isChirpyRed: updatedUser.isChirpyRed});
+
+        }catch(err){
+                res.status(401).send("Unauthorized");
+                console.log(err);
+        }
+
+
+} 
+
+const handleDeleteChirp =  async (req: Request, res: Response) => {
+	
+	try{
+	const ans = req.body;
+	const token = getBearerToken(req);
+	if(!token){
+        	res.status(401).send("missing token");
+                return;
+        }
+	const userId =  validateJWT(token , config.api.secret);
+	const chirpId = req.params.chirpId as string;
+	const chirpObj = await getChirp(chirpId);
+	if(!chirpObj){res.status(404).send("Not Found"); return;}	
+	if(chirpObj.userId != userId){res.status(403).send("Unauthrized"); return;}
+	await deleteChirp(chirpId);
+	res.status(204).send();
+	
+	}catch(err){
+	        res.status(401).send("Unauthorized");
+                console.log(err);
+	
+	}
+
 
 
 
 }
+
+const handleHook =  async (req: Request, res: Response) => {
+	try{
+	const ans = req.body;
+	if (!ans.event || !ans.data || !ans.data.userId){
+		res.status(400).send("Invalid request body");
+		return;
+	}
+	const key = getAPIKey(req);
+	if(!key || key != config.api.polka){res.status(401).send("Invalid request"); return;}
+	if(ans.event != "user.upgraded"){res.status(204).send(); return;}
+	const user = await getUserById(ans.data.userId);
+	if(!user){res.status(404).send(); return;}
+	await upgradeUser(ans.data.userId);
+	res.status(204).send();
+	}catch(err){
+		res.status(401).send("Invalid request"); 
+
+	}
+
+
+
+
+}
+
+
 
 app.use(express.json());
 app.use("/app",middlewareMetricsInc);
@@ -281,7 +370,7 @@ app.use(middlewareLogResponses);
 
 app.get("/api/healthz",handlerReadiness);
 app.get("/admin/metrics",handlerPrint);
-app.get("/api/chirps",handleAllChirps)
+app.get("/api/chirps/",handleAllChirps)
 app.get("/api/chirps/:chirpId",handleGetChirpById);
 
 app.post("/admin/reset",handlerReset);
@@ -290,6 +379,11 @@ app.post("/api/chirps",handleAddChirp)
 app.post("/api/login",handleLogin);
 app.post("/api/refresh",handleApiReset);
 app.post("/api/revoke",handleRevoke);
+app.post("/api/polka/webhooks",handleHook)
+
+app.put("/api/users",handleEditEmailPassword);
+
+app.delete("/api/chirps/:chirpId",handleDeleteChirp);
 
 app.use(ErrorMiddleware);
 
